@@ -6,23 +6,48 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var deviceToken: NSData?
     var window: UIWindow?
     var alertView: UIAlertView? = nil
+    
+    class func becomeCurrentRemoteNotificationDelegate(delegate: RemoteNotificationDelegate) {
+        (UIApplication.sharedApplication().delegate! as AppDelegate).currentRemoteNotificationDelegate = delegate
+    }
+    
+    class func unbecomeCurrentRemoteNotificationDelegate() {
+        (UIApplication.sharedApplication().delegate! as AppDelegate).currentRemoteNotificationDelegate = nil
+    }
+    
+    weak var currentRemoteNotificationDelegate: RemoteNotificationDelegate?
 
     func application(application: UIApplication, didFinishLaunchingWithOptions launchOptions: [NSObject: AnyObject]?) -> Bool {
+        // notifications et al
         registerSettingsAndDelegates()
-        
-        window = UIWindow(frame: UIScreen.mainScreen().bounds)
+
+        // perform initialization
+        let start = NSDate()
         let storyboard = UIStoryboard(name: "Main", bundle: nil)
-        if let x = CurrentLiftUser.userId {
-            // We have previously-known user id. But is the account still there?
-            LiftServer.sharedInstance.userCheckAccount(CurrentLiftUser.userId!) { r in
-                let id: String = r.cata({ err in if err.code == 404 { return "login" } else { return "offline" } }, { x in return "main" })
-                
-                self.window!.rootViewController = storyboard.instantiateViewControllerWithIdentifier(id) as? UIViewController!
-                self.window!.makeKeyAndVisible()
+        // main initialization
+        // Prepare the cache
+        LiftServerCache.sharedInstance.build { _ in
+            if let userId = CurrentLiftUser.userId {
+                // We have previously-known user id. But is the account still there?
+                LiftServer.sharedInstance.userCheckAccount(userId) { r in
+                    if let x = self.deviceToken {
+                        LiftServer.sharedInstance.userRegisterDeviceToken(userId, deviceToken: x)
+                    }
+
+                    self.startWithStoryboardId(storyboard, id: r.cata({ err in if err.code == 404 { return "login" } else { return "offline" } }, { x in return "main" }))
+                }
+            } else {
+                self.startWithStoryboardId(storyboard, id: "login")
             }
         }
-        
+
         return true
+    }
+    
+    func startWithStoryboardId(storyboard: UIStoryboard, id: String) {
+        window = UIWindow(frame: UIScreen.mainScreen().bounds)
+        window!.makeKeyAndVisible()
+        window!.rootViewController = storyboard.instantiateViewControllerWithIdentifier(id) as? UIViewController!
     }
     
     func registerSettingsAndDelegates() {
@@ -70,7 +95,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
     
     func application(application: UIApplication, didReceiveRemoteNotification userInfo: [NSObject : AnyObject]) {
-        if self.alertView == nil {
+        if let x = currentRemoteNotificationDelegate {
+            x.remoteNotificationReceivedAlert("foo")
+        } else if self.alertView == nil {
             let aps = userInfo["aps"] as [NSObject : AnyObject]
             let alert = aps["alert"] as String
             
@@ -86,11 +113,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
     
     func applicationDidBecomeActive(application: UIApplication) {
-        LiftServerCache.sharedInstance.build()
+        LiftServerCache.sharedInstance.build(const(()))
     }
     
     func applicationDidReceiveMemoryWarning(application: UIApplication) {
         LiftServerCache.sharedInstance.clean()
     }
+
 }
 

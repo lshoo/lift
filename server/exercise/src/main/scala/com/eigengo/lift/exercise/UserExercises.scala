@@ -5,7 +5,7 @@ import akka.contrib.pattern.ShardRegion
 import akka.persistence.{PersistentActor, SnapshotOffer}
 import com.eigengo.lift.common.{AutoPassivation, UserId}
 import com.eigengo.lift.exercise.AccelerometerData._
-import com.eigengo.lift.exercise.ExerciseClassifier.{Classify, FullyClassifiedExercise, NoExercise, UnclassifiedExercise}
+import com.eigengo.lift.exercise.ExerciseClassifier._
 import com.eigengo.lift.exercise.UserExercises._
 import com.eigengo.lift.exercise.UserExercisesView._
 import com.eigengo.lift.notification.NotificationProtocol.{Devices, MobileDestination, PushMessage, WatchDestination}
@@ -31,14 +31,71 @@ object UserExercises {
    * @param sessionId the sessionProps identity
    * @param bits the submitted bits
    */
-  case class UserExerciseDataProcess(userId: UserId, sessionId: SessionId, bits: BitVector)
+  case class UserExerciseDataProcessSinglePacket(userId: UserId, sessionId: SessionId, bits: BitVector)
 
   /**
-   * Process exercise data for the given sessionProps
+   * Remove a session identified by ``sessionId`` for user identified by ``userId``
+   * @param userId the user identity
+   * @param sessionId the session identity
+   */
+  case class UserExerciseSessionDelete(userId: UserId, sessionId: SessionId)
+
+  /**
+   * User classified exercise.
+   * @param userId user
+   * @param sessionId session
+   * @param name the exercise name
+   * @param intensity the intensity, if known
+   */
+  case class UserExerciseClassify(userId: UserId, sessionId: SessionId, name: ExerciseName, intensity: Option[ExerciseIntensity])
+
+  /**
+   * Receive multiple packets of data for the given ``userId`` and ``sessionId``. The ``packets`` is a ZIP archive
+   * containing multiple files, each representing a single packet. Imagine that this message results in at least
+   * one ``UserExerciseDataProcessSinglePacket`` messages.
+   *
+   * The main notion is that all packets in the archive have been measured *at the same time*. It is possible that
+   * the archive contains the following files.
+   *
+   * {{{
+   * ad-watch.dat  (accelerometer data from the watch)
+   * ad-mobile.dat (accelerometer data from the mobile)
+   * ad-shoe.dat   (accelerometer data from a shoe sensor)
+   * hr-watch.dat  (heart rate from the watch)
+   * hr-strap.dat  (heart rate from a HR strap)
+   * ...
+   * }}}
+   *
+   * The files should be processed accordingly (by examining their content, not their file names), and the exercise
+   * classifiers should use all available information to determine the exercise
+   *
+   * @param userId the user identity
+   * @param sessionId the session identity
+   * @param packets the archive containing at least one packet
+   */
+  case class UserExerciseDataProcessMultiplePackets(userId: UserId, sessionId: SessionId, packets: Array[Byte])
+
+  /**
+   * Process exercise data for the given session
    * @param sessionId the sessionProps identifier
    * @param bits the exercise data bits
    */
-  private case class ExerciseDataProcess(sessionId: SessionId, bits: BitVector)
+  private case class ExerciseDataProcessSinglePacket(sessionId: SessionId, bits: BitVector)
+
+  /**
+   * Process exercise data for the given session
+   * @param sessionId the sessionProps identifier
+   * @param packets the bytes representing an archive with multiple exercise data bits
+   */
+  private case class ExerciseDataProcessMultiplePackets(sessionId: SessionId, packets: Array[Byte])
+
+  /**
+   * User classified exercise.
+   * @param sessionId session
+   * @param name the exercise name
+   * @param intensity the intensity, if known
+   */
+  private case class UserClassifiedExercise(sessionId: SessionId, name: ExerciseName, intensity: Option[ExerciseIntensity])
 
   /**
    * Starts the user exercise sessionProps
@@ -67,6 +124,12 @@ object UserExercises {
   private case class ExerciseSessionEnd(sessionId: SessionId)
 
   /**
+   * Remove the specified ``sessionId``
+   * @param sessionId the session identity
+   */
+  private case class ExerciseSessionDelete(sessionId: SessionId)
+
+  /**
    * Accelerometer data for the given sessionProps
    * @param sessionId the sessionProps identity
    * @param data the data
@@ -83,18 +146,24 @@ object UserExercises {
    * so our identity is ``userId.toString``
    */
   val idExtractor: ShardRegion.IdExtractor = {
-    case UserExerciseSessionStart(userId, session)        ⇒ (userId.toString, ExerciseSessionStart(session))
-    case UserExerciseSessionEnd(userId, sessionId)        ⇒ (userId.toString, ExerciseSessionEnd(sessionId))
-    case UserExerciseDataProcess(userId, sessionId, data) ⇒ (userId.toString, ExerciseDataProcess(sessionId, data))
+    case UserExerciseSessionStart(userId, session)                          ⇒ (userId.toString, ExerciseSessionStart(session))
+    case UserExerciseSessionEnd(userId, sessionId)                          ⇒ (userId.toString, ExerciseSessionEnd(sessionId))
+    case UserExerciseDataProcessSinglePacket(userId, sessionId, data)       ⇒ (userId.toString, ExerciseDataProcessSinglePacket(sessionId, data))
+    case UserExerciseDataProcessMultiplePackets(userId, sessionId, packets) ⇒ (userId.toString, ExerciseDataProcessMultiplePackets(sessionId, packets))
+    case UserExerciseSessionDelete(userId, sessionId)                       ⇒ (userId.toString, ExerciseSessionDelete(sessionId))
+    case UserExerciseClassify(userId, sessionId, name, intensity)           ⇒ (userId.toString, UserClassifiedExercise(sessionId, name, intensity))
   }
 
   /**
    * Resolves the shard name from the incoming message.
    */
   val shardResolver: ShardRegion.ShardResolver = {
-    case UserExerciseSessionStart(userId, _)   ⇒ s"${userId.hashCode() % 10}"
-    case UserExerciseSessionEnd(userId, _)     ⇒ s"${userId.hashCode() % 10}"
-    case UserExerciseDataProcess(userId, _, _) ⇒ s"${userId.hashCode() % 10}"
+    case UserExerciseSessionStart(userId, _)                        ⇒ s"${userId.hashCode() % 10}"
+    case UserExerciseSessionEnd(userId, _)                          ⇒ s"${userId.hashCode() % 10}"
+    case UserExerciseDataProcessSinglePacket(userId, _, _)          ⇒ s"${userId.hashCode() % 10}"
+    case UserExerciseDataProcessMultiplePackets(userId, _, _)       ⇒ s"${userId.hashCode() % 10}"
+    case UserExerciseSessionDelete(userId, _)                       ⇒ s"${userId.hashCode() % 10}"
+    case UserExerciseClassify(userId, sessionId, name, intensity)   ⇒ s"${userId.hashCode() % 10}"
   }
 
 }
@@ -105,15 +174,15 @@ object UserExercises {
  */
 class UserExercises(notification: ActorRef, userProfile: ActorRef, exerciseClasssifiers: ActorRef)
   extends PersistentActor with ActorLogging with AutoPassivation {
+  import akka.pattern.ask
   import scala.concurrent.duration._
 
-  import akka.pattern.ask
   private val userId = UserId(self.path.name)
-  import com.eigengo.lift.common.Timeouts.defaults._
   import context.dispatcher
+  import com.eigengo.lift.common.Timeouts.defaults._
+
   (userProfile ? UserGetDevices(userId)).mapTo[Devices].onSuccess {
-    case ds ⇒
-      devices = ds
+    case ds ⇒ devices = ds
   }
 
   // minimum confidence
@@ -164,16 +233,26 @@ class UserExercises(notification: ActorRef, userProfile: ActorRef, exerciseClass
         context.become(exercising(newId, newSessionProps))
       }
 
-    case ExerciseDataProcess(`id`, bits) ⇒
-      log.info("ExerciseDataProcess: exercising -> exercising.")
+    case ExerciseDataProcessSinglePacket(`id`, bits) ⇒
+      log.debug("ExerciseDataProcess: exercising -> exercising.")
+      // Tracing code: save any input chunk to an arbitrarily-named file for future analysis.
+      // Ideally, this will go somewhere more durable, but this is sufficient for now.
+      UserExercisesTracing.saveBits(id, bits)
+
       val result = decodeAll(bits, Nil)
+
+      UserExercisesTracing.saveAccelerometerData(id, result._2)
+
       validateData(result).fold(
         { err ⇒ sender() ! \/.left(err)},
         { evt ⇒ exerciseClasssifiers ! Classify(sessionProps, evt); sender() ! \/.right(()) }
       )
 
+    case ExerciseDataProcessMultiplePackets(`id`, _) ⇒
+      sender() ! \/.left("Not implemented yet")
+
     case FullyClassifiedExercise(metadata, confidence, name, intensity) if confidence > confidenceThreshold ⇒
-      log.info("FullyClassifiedExercise: exercising -> exercising.")
+      log.debug("FullyClassifiedExercise: exercising -> exercising.")
       persist(ExerciseEvt(id, metadata, Exercise(name, intensity))) { evt ⇒
         tooMuchRestCancellable = Some(context.system.scheduler.scheduleOnce(sessionProps.restDuration, self, TooMuchRest))
         intensity.foreach { i ⇒
@@ -182,24 +261,32 @@ class UserExercises(notification: ActorRef, userProfile: ActorRef, exerciseClass
         }
       }
 
+    case Tap ⇒
+      persist(ExerciseSetExplicitMarkEvt(id)) { evt ⇒
+        tooMuchRestCancellable = Some(context.system.scheduler.scheduleOnce(sessionProps.restDuration, self, TooMuchRest))
+      }
+
+    case UserClassifiedExercise(`id`, name, intensity) =>
+      self ! FullyClassifiedExercise(ModelMetadata(0), 1, name, intensity)
+
     case UnclassifiedExercise(_) ⇒
       // Maybe notify the user?
       tooMuchRestCancellable = Some(context.system.scheduler.scheduleOnce(sessionProps.restDuration, self, TooMuchRest))
 
     case NoExercise(metadata) ⇒
-      log.info("NoExercise: exercising -> exercising.")
+      log.debug("NoExercise: exercising -> exercising.")
       persist(NoExerciseEvt(id, metadata)) { evt ⇒
         tooMuchRestCancellable = Some(context.system.scheduler.scheduleOnce(sessionProps.restDuration, self, TooMuchRest))
       }
 
     case TooMuchRest ⇒
-      log.info("NoExercise: exercising -> exercising.")
+      log.debug("NoExercise: exercising -> exercising.")
       persist(TooMuchRestEvt(id)) { evt ⇒
         notification ! PushMessage(devices, "Chop chop!", None, Some("default"), Seq(MobileDestination, WatchDestination))
       }
 
     case ExerciseSessionEnd(`id`) ⇒
-      log.info("ExerciseSessionEnd: exercising -> not exercising.")
+      log.debug("ExerciseSessionEnd: exercising -> not exercising.")
       persist(SessionEndedEvt(id)) { evt ⇒
         saveSnapshot(evt)
         context.become(notExercising)
@@ -213,6 +300,13 @@ class UserExercises(notification: ActorRef, userProfile: ActorRef, exerciseClass
         saveSnapshot(evt)
         sender() ! \/.right(evt.sessionId)
         context.become(exercising(evt.sessionId, sessionProps))
+      }
+    case ExerciseSessionEnd(_) ⇒
+      sender() ! \/.left("Not in session")
+
+    case ExerciseSessionDelete(sessionId) ⇒
+      persist(SessionDeletedEvt(sessionId)) { evt ⇒
+        sender() ! \/.right(())
       }
   }
 

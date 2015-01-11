@@ -69,12 +69,38 @@ struct Exercise {
     }
     
     ///
+    /// Session intensity
+    ///
+    struct SessionIntensity {
+        var intended: ExerciseIntensityKey
+        var actual: ExerciseIntensityKey
+    }
+    
+    ///
+    /// Session date summary
+    ///
+    struct SessionDate {
+        var date: NSDate
+        var sessionIntensities: [SessionIntensity]
+    }
+    
+    ///
     /// Session summary model
     ///
     struct SessionSummary {
         var id: NSUUID
         var sessionProps: SessionProps
         var setIntensities: [ExerciseIntensityKey]
+    }
+    
+    ///
+    /// Session suggestions
+    ///
+    struct SessionSuggestion {
+        /// the target muscle groups
+        var muscleGroupKeys: [String]
+        /// the intended intensity
+        var intendedIntensity: ExerciseIntensityKey
     }
     
     ///

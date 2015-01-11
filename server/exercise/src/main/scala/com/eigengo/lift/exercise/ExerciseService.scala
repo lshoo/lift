@@ -1,11 +1,11 @@
 package com.eigengo.lift.exercise
 
-import java.util.UUID
+import java.util.{Date, UUID}
 
 import akka.actor.ActorRef
 import com.eigengo.lift.exercise.ExerciseClassifiers.{GetMuscleGroups, MuscleGroup}
-import com.eigengo.lift.exercise.UserExercises.{UserExerciseDataProcess, UserExerciseSessionEnd, UserExerciseSessionStart}
-import com.eigengo.lift.exercise.UserExercisesView.{SessionSummary, ExerciseSession, UserGetExerciseSession, UserGetExerciseSessionsSummary}
+import com.eigengo.lift.exercise.UserExercises._
+import com.eigengo.lift.exercise.UserExercisesView._
 import scodec.bits.BitVector
 import spray.routing.Directives
 
@@ -24,14 +24,33 @@ trait ExerciseService extends Directives with ExerciseMarshallers {
       }
     } ~
     path("exercise" / UserIdValue) { userId ⇒
+      get {
+        parameters('startDate.as[Date], 'endDate.as[Date]) { (startDate, endDate) ⇒
+          complete {
+            (userExercisesView ? UserGetExerciseSessionsSummary(userId, startDate, endDate)).mapTo[List[SessionSummary]]
+          }
+        } ~
+        parameter('date.as[Date]) { date ⇒
+          complete {
+            (userExercisesView ? UserGetExerciseSessionsSummary(userId, date, date)).mapTo[List[SessionSummary]]
+          }
+        } ~
+        complete {
+          (userExercisesView ? UserGetExerciseSessionsDates(userId)).mapTo[List[SessionDate]]
+        }
+      }
+    } ~
+    path("exercise" / UserIdValue / "start") { userId ⇒
       post {
         handleWith { sessionProps: SessionProps ⇒
           (userExercises ? UserExerciseSessionStart(userId, sessionProps)).mapRight[UUID]
         }
-      } ~
-      get {
+      }
+    } ~
+    path("exercise" / UserIdValue / SessionIdValue / "end") { (userId, sessionId) ⇒
+      post {
         complete {
-          (userExercisesView ? UserGetExerciseSessionsSummary(userId)).mapTo[List[SessionSummary]]
+          (userExercises ? UserExerciseSessionEnd(userId, sessionId)).mapRight[Unit]
         }
       }
     } ~
@@ -42,15 +61,22 @@ trait ExerciseService extends Directives with ExerciseMarshallers {
         }
       } ~
       put {
+        // TODO: content type negotiation
         handleWith { bits: BitVector ⇒
-          (userExercises ? UserExerciseDataProcess(userId, sessionId, bits)).mapRight[Unit]
+          (userExercises ? UserExerciseDataProcessSinglePacket(userId, sessionId, bits)).mapRight[Unit]
         }
       } ~
       delete {
         complete {
-          (userExercises ? UserExerciseSessionEnd(userId, sessionId)).mapRight[Unit]
+          (userExercises ? UserExerciseSessionDelete(userId, sessionId)).mapRight[Unit]
+        }
+      }
+    } ~
+    path("exercise" / UserIdValue / SessionIdValue / "classification") { (userId, sessionId) ⇒
+      post {
+        handleWith { exercise: Exercise ⇒
+          (userExercises ? UserExerciseClassify(userId, sessionId, exercise.name, exercise.intensity)).mapRight[Unit]
         }
       }
     }
-
 }
